@@ -135,14 +135,13 @@ success "Пользователь $NEW_USER настроен и добавлен
 RANDOM_SSH_PORT=$(shuf -i 10001-65535 -n 1)
 info "Сгенерирован случайный SSH-порт: $RANDOM_SSH_PORT"
 
+# Обязательно создаем каталог разделения привилегий, иначе sshd -t падает с ошибкой
+mkdir -p /run/sshd
+chmod 0755 /run/sshd
+
 cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak_$(date +%s)"
 
-# Исправление сокетов systemd в современных Ubuntu (22.10, 24.04 LTS)
-if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
-    systemctl stop ssh.socket 2>/dev/null || true
-    systemctl disable ssh.socket 2>/dev/null || true
-fi
-
+# Создаем конфигурацию SSH
 cat <<EOF > /etc/ssh/sshd_config.d/99-hardened.conf
 Port $RANDOM_SSH_PORT
 PermitRootLogin no
@@ -155,13 +154,21 @@ ClientAliveCountMax 2
 X11Forwarding no
 EOF
 
+# Проверяем синтаксис
 if sshd -t; then
+    # Исправление сокетов systemd в Ubuntu 22.10/24.04
+    if systemctl is-active --quiet ssh.socket || systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
+        systemctl stop ssh.socket 2>/dev/null || true
+        systemctl disable ssh.socket 2>/dev/null || true
+    fi
     systemctl enable ssh.service 2>/dev/null || systemctl enable sshd.service 2>/dev/null
     systemctl restart ssh.service 2>/dev/null || systemctl restart sshd.service 2>/dev/null
     success "Служба SSH перезапущена на порту $RANDOM_SSH_PORT. Вход root запрещен."
 else
-    err "Ошибка проверки синтаксиса SSH! Откат."
+    err "Ошибка проверки синтаксиса SSH! Откат и восстановление стандартного SSH..."
     rm -f /etc/ssh/sshd_config.d/99-hardened.conf
+    # Гарантированное восстановление работы SSH при любой ошибке
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || systemctl start ssh.socket 2>/dev/null || true
     exit 1
 fi
 
